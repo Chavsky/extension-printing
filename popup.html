@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>SmartGov Auto Printer</title>
+  <style>
+    body {
+      width: 320px;
+      font-family: Arial, sans-serif;
+      padding: 12px;
+      margin: 0;
+      background-color: #f8f9fa;
+    }
+    .form-group {
+      margin-bottom: 12px;
+    }
+    label {
+      font-weight: bold;
+      font-size: 12px;
+      display: block;
+      margin-bottom: 5px;
+      color: #333;
+    }
+    select, textarea, button {
+      width: 100%;
+      box-sizing: border-box;
+    }
+    select {
+      padding: 8px;
+      font-size: 13px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+      background: #fff;
+      cursor: pointer;
+    }
+    textarea {
+      height: 130px;
+      padding: 8px;
+      font-size: 11px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+      resize: vertical;
+      font-family: monospace;
+    }
+    button {
+      padding: 10px;
+      background-color: #27ae60;
+      color: white;
+      border: none;
+      font-weight: bold;
+      cursor: pointer;
+      border-radius: 4px;
+      font-size: 13px;
+    }
+    button:hover {
+      background-color: #219150;
+    }
+    #status {
+      font-size: 12px;
+      margin-top: 10px;
+      font-weight: bold;
+      min-height: 16px;
+      word-break: break-word;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Opsi Mode Halaman SmartGov -->
+  <div class="form-group">
+    <label for="modeSelect">Mode Halaman SmartGov:</label>
+    <select id="modeSelect">
+      <option value="SPPT">SPPT / STTS Terseleksi</option>
+      <option value="CATATAN_PEMBAYARAN">Catatan Pembayaran</option>
+    </select>
+  </div>
+
+  <!-- Area Tempel Data -->
+  <div class="form-group">
+    <label for="jsonInput">Tempel Data Excel / JSON di sini:</label>
+    <textarea id="jsonInput"></textarea>
+  </div>
+
+  <button id="btnStart">Mulai Cetak Batch</button>
+
+  <div id="status"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
