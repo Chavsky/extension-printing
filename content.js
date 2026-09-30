@@ -2,11 +2,27 @@ const LOG_PREFIX = '%c[Content Script]';
 const LOG_STYLE = 'color: #27ae60; font-weight: bold;';
 
 let isContentProcessing = false;
+let cancelContentProcess = false;
+let nopModalProblem = false;
+let lastHandledNopChangeNotice = '';
+let progressWidget = null;
+let latestBatchState = null;
 
 console.log(LOG_PREFIX, LOG_STYLE, 'Content Script terpasang pada halaman SmartGov.');
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === "BATCH_PROGRESS") {
+    renderBatchProgress(request.state);
+    return false;
+  }
+  if (request.action === "CANCEL_PROCESS") {
+    cancelContentProcess = true;
+    sendResponse({ status: "CANCELING" });
+    return false;
+  }
   if (request.action === "PROCESS_NOP") {
+    createProgressWidget();
+    if (latestBatchState) renderBatchProgress(latestBatchState);
     if (isContentProcessing) {
       console.warn(LOG_PREFIX, LOG_STYLE, `Abaikan duplikat perintah untuk NOP ${request.nop}.`);
       sendResponse({ status: "BUSY" });
@@ -21,6 +37,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     isContentProcessing = true;
+    cancelContentProcess = false;
+    nopModalProblem = false;
 
     eksekusiProses(request.nop, request.tahun, request.mode || "SPPT")
       .then(() => {
@@ -39,8 +57,68 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
+chrome.runtime.sendMessage({ action: 'GET_BATCH_STATE' }, (state) => {
+  if (!chrome.runtime.lastError && state?.running && state.total) renderBatchProgress(state);
+});
+
+function createProgressWidget() {
+  if (progressWidget || !document.documentElement) return;
+  const host = document.createElement('div');
+  host.id = 'smartgov-extension-progress';
+  const shadow = host.attachShadow({ mode: 'open' });
+  shadow.innerHTML = `
+    <style>
+      :host { all: initial; position: fixed; right: 18px; bottom: 18px; z-index: 2147483647; font-family: Arial, sans-serif; }
+      .card { box-sizing: border-box; width: 270px; padding: 13px; color: #263238; background: #fff; border: 1px solid #cfd8dc; border-radius: 9px; box-shadow: 0 4px 18px #0003; }
+      .title { font-size: 13px; font-weight: 700; }
+      .status { margin-top: 6px; color: #56616a; font-size: 11px; overflow-wrap: anywhere; }
+      progress { width: 100%; height: 12px; margin-top: 8px; }
+      button { width: 100%; margin-top: 9px; padding: 8px; border: 0; border-radius: 5px; background: #c0392b; color: #fff; font-size: 12px; font-weight: 700; cursor: pointer; }
+      button:hover { background: #a93226; }
+    </style>
+    <section class="card" aria-live="polite">
+      <div class="title">PDF terunduh: <span class="count">0/0</span></div>
+      <progress value="0" max="1"></progress>
+      <div class="status">Menunggu proses...</div>
+      <button type="button">Batalkan Proses</button>
+    </section>`;
+  shadow.querySelector('button').addEventListener('click', () => {
+    chrome.runtime.sendMessage({ action: 'CANCEL_BATCH' }, (response) => {
+      if (chrome.runtime.lastError) return;
+      shadow.querySelector('.status').textContent = response?.status === 'CANCELING'
+        ? 'Pembatalan diminta...' : 'Tidak ada proses yang berjalan.';
+    });
+  });
+  (document.body || document.documentElement).appendChild(host);
+  progressWidget = { host, shadow };
+}
+
+function renderBatchProgress(state) {
+  if (!state || !state.total) return;
+  latestBatchState = state;
+  createProgressWidget();
+  if (!progressWidget) return;
+  const { shadow } = progressWidget;
+  const total = Number(state.total) || 0;
+  const completed = Math.min(Number(state.completed) || 0, total);
+  shadow.querySelector('.count').textContent = `${Number(state.successes) || 0}/${total}`;
+  const bar = shadow.querySelector('progress');
+  bar.max = total || 1;
+  bar.value = completed;
+  const status = shadow.querySelector('.status');
+  if (state.running && completed > 0 && state.startedAt) {
+    const remaining = Math.ceil(((Date.now() - state.startedAt) / completed) * (total - completed) / 60000);
+    const eta = remaining < 1 ? 'kurang dari 1 menit' : remaining >= 60
+      ? `${Math.floor(remaining / 60)} jam ${remaining % 60} menit` : `${remaining} menit`;
+    status.textContent = `Estimasi waktu: ${eta} · ${state.status || 'Sedang berjalan'}`;
+  } else {
+    status.textContent = state.mergeStatus || state.status || 'Menunggu proses...';
+  }
+  shadow.querySelector('button').style.display = state.running ? 'block' : 'none';
+}
+
 async function eksekusiProses(nopRaw, tahunCustom, mode) {
-  bersihkanLayar();
+  periksaPembatalan();
   await sleep(400);
 
   const inputs = await tungguKolomNop();
@@ -67,6 +145,7 @@ async function eksekusiProses(nopRaw, tahunCustom, mode) {
   await sleep(100);
 
   for (let i = 0; i < 7; i++) {
+    periksaPembatalan();
     isiInput(inputs[i], parts[i]);
     await sleep(60);
   }
@@ -113,7 +192,7 @@ async function eksekusiProses(nopRaw, tahunCustom, mode) {
   }
 
   await sleep(400);
-  bersihkanLayar();
+  periksaPembatalan();
   return true;
 }
 
@@ -165,7 +244,7 @@ async function menanganiModalTahunSppt() {
 
 async function tungguKolomNop() {
   for (let i = 0; i < 8; i++) {
-    bersihkanLayar();
+    periksaPembatalan();
     const inputs = cariKolomNop();
     if (inputs.length >= 7) return inputs;
     await sleep(300);
@@ -205,8 +284,6 @@ function isInputTahun(el) {
 
 function isiInput(el, val) {
   if (!el) return;
-  el.focus();
-  el.click();
   
   const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
   if (nativeSetter) {
@@ -250,11 +327,58 @@ async function tekanKonfirmasiModal() {
 }
 
 function bersihkanLayar() {
-  document.querySelectorAll('.modal-backdrop, .sweet-overlay, .swal2-backdrop').forEach(el => el.remove());
-  document.querySelectorAll('.modal.in, .modal.show, .sweet-alert.show-sweet-alert').forEach(el => {
-    el.style.display = 'none';
-  });
-  document.body.classList.remove('modal-open');
+  // Jangan menghapus backdrop atau menutup modal milik halaman SmartGov.
+}
+
+function periksaPembatalan() {
+  const dialogBermasalah = tanganiDialogLookupBermasalah();
+  if (dialogBermasalah) {
+    nopModalProblem = true;
+    throw new Error(`NOP bermasalah: ${dialogBermasalah}; tombol BATAL ditekan otomatis.`);
+  }
+
+  const noticeNopBerubah = deteksiNotifikasiNopBerubah();
+  if (noticeNopBerubah) {
+    throw new Error(`NOP bermasalah: SmartGov memberi notifikasi NOP telah berubah. ${noticeNopBerubah}`);
+  }
+
+  if (cancelContentProcess) throw new Error('Proses dibatalkan pengguna.');
+}
+
+function deteksiNotifikasiNopBerubah() {
+  const notice = document.getElementById('success_box');
+  if (!notice || !isVisible(notice)) {
+    lastHandledNopChangeNotice = '';
+    return '';
+  }
+
+  const text = (notice.innerText || notice.textContent || '').replace(/\s+/g, ' ').trim();
+  if (!/NOP.{0,120}(perubahan|berubah)|NOP\s+Baru/i.test(text)) return '';
+
+  const signature = text.toLowerCase();
+  if (signature === lastHandledNopChangeNotice) return '';
+  lastHandledNopChangeNotice = signature;
+  return text;
+}
+
+function tanganiDialogLookupBermasalah() {
+  const dialogs = Array.from(document.querySelectorAll('[id^="main_data_keydown_"][id$="_dialog"]'))
+    .filter(isVisible)
+    .reverse();
+
+  for (const dialog of dialogs) {
+    const tombolBatal = dialog.querySelector('.modal-footer button.cancel-btn, button.cancel-btn[data-dismiss="modal"]') ||
+      Array.from(dialog.querySelectorAll('.modal-footer button, .modal-footer input[type="button"]'))
+        .find(button => (button.textContent || button.value || '').trim().toUpperCase() === 'BATAL');
+    if (!tombolBatal || !isVisible(tombolBatal)) continue;
+
+    const judul = dialog.querySelector('.modal-header')?.textContent?.trim().replace(/\s+/g, ' ') || 'dialog lookup';
+    tombolBatal.click();
+    console.warn(LOG_PREFIX, LOG_STYLE, `${judul} muncul; tombol BATAL ditekan otomatis.`);
+    return judul;
+  }
+
+  return false;
 }
 
 function isVisible(el) {
@@ -264,5 +388,7 @@ function isVisible(el) {
 }
 
 function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve, reject) => setTimeout(() => {
+    try { periksaPembatalan(); resolve(); } catch (error) { reject(error); }
+  }, ms));
 }
